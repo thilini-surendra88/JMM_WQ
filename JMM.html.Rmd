@@ -1,0 +1,775 @@
+---
+title: "JMM memo"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+    self_contained: yes
+editor_options: 
+  chunk_output_type: console
+header-includes:
+  - \usepackage[utf8]{inputenc} 
+  - \usepackage{caption}
+    
+---
+
+\captionsetup[table]{labelformat=empty}
+
+
+
+```{r set up,echo=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+pacman::p_load(here,tidyverse,readxl,writexl, grid,scales,egg, knitr,RColorBrewer, kableExtra, mvbutils)
+
+# packages needed for interactive graphing and tables
+pacman::p_load(plotly,ggplotlyExtra,DT)
+
+
+library(dplyr, warn.conflicts = FALSE)
+# Suppress summarise info
+options(dplyr.summarise.inform = FALSE)
+
+
+source(here('funtions_JMM.R'))
+# Remove scientific notation
+options(scipen = 999)   
+
+
+```
+
+
+```{r loading data, results="asis"}
+
+
+exceedance_file_path <- file.path("data", "Exceedance.Raw.Output_oct.csv")
+
+#change to Trigger Level.xlsx in 2021
+trigger_file_path <- file.path("data", "Trigger Level2020.xlsx")
+
+hist_file_path <- file.path("data", "1.0 Johnny Mtn Water Quality 1986-2020.csv")
+current_file_path <- file.path("data", "1.0 Johnny Mtn Water Quality 2020_oct.csv")
+
+##WQ guidelines
+WQGLs<-read.csv(here(exceedance_file_path))
+
+##WQ trigger levels
+trigger_levels1 <- read_excel(here(trigger_file_path),sheet="Level.1",col_types = "text")
+
+
+trigger_levels2 <- read_excel(here(trigger_file_path),sheet="Level.2",col_types = "text")
+
+
+###historical WQ file
+
+WQ.raw <- read.csv(here(hist_file_path))
+
+##current WQ file
+
+WQ.current<-read.csv(here(current_file_path))
+
+
+```
+
+
+
+```{r define parameters, results="asis"}
+
+#80% of pH guidelines for below
+pH65<-  (-log10((10^-6.5)*0.8))
+pH9<- 9-((-log10((10^-9)*0.8))-9)
+
+#95% of pH guidelines for below
+pH65.2<- (-log10((10^-6.5)*0.95))
+pH9.2<-  9-((-log10((10^-9)*0.95))-9)
+
+###To Update for Sampling Year and Month
+s.Year <- 2020
+s.Month <- "Oct"
+exceedance_sites<- c("JM1",  "JM2",  "JM3",  "JM4",  "JM5",  "JM6",  "JM7")
+
+```
+
+
+```{r output file paths, results="asis"}
+
+GL_screening_path <- file.path("output","0.4 GL Screening Results.xlsx")
+
+
+file.name2 <-paste0("Iskut trigger exceedance.update",s.Month,".xlsx")
+
+trigger_exceed_path <- file.path("output",file.name2 )
+
+fig_dir <- "Figures"
+
+
+
+```
+
+
+
+
+```{r manipulate exceedance files, results="asis"}
+
+WQdata1<-WQGLs %>%
+ # mutate(
+ #   Date = as.Date (Date, "%m/%d/%Y")) %>%
+  filter(!str_detect(guideline,"CCME")) %>%
+  filter(!is.na(GLExceed)) %>%
+  filter(Year == s.Year) %>%
+#  filter(Month == s.Month) %>%
+  filter(Site %in% exceedance_sites)  %>%
+  #filter(Site %in% c("JM1", "JM10", "JM11", "JM2",  "JM3",  "JM4",  "JM5",  "JM6",  "JM7"))  %>%
+  select(-GLExceed) %>% # pH was not properly screened
+  #Ensure values are numeric
+ #DL.value = as.numeric(as.character(DL.value)),
+ mutate(Raw.value = as.numeric(as.character(Raw.value)),
+    GL.value = as.numeric(as.character(GL.value)),
+    GL.80P = GL.value * 0.8,
+    GL.80P = ifelse(variable == "pH" & GL.value == 6.5, pH65,
+                    ifelse(variable == "pH" & GL.value == 9.0, pH9, GL.80P)),
+    GL.Exceed = ifelse(variable == "pH" & GL.value == 6.5 & Raw.value < GL.value, "Exceed",
+                         ifelse(variable == "pH" & GL.value == 9.0 & Raw.value >GL.value, "Exceed", 
+                                ifelse(variable != "pH" & Raw.value >GL.value, "Exceed","ok"))),
+    GL.80P.Exceed = ifelse(variable == "pH" & GL.value == 6.5 & Raw.value < GL.80P, "Exceed",
+                         ifelse(variable == "pH" & GL.value == 9.0 & Raw.value >GL.80P, "Exceed", 
+                                ifelse(variable != "pH" & Raw.value >GL.80P, "Exceed","ok"))),
+    GL.80P.Exceed.only = ifelse(GL.80P.Exceed == "Exceed" & GL.Exceed == "ok", "Approaching.Only","ok"))
+
+
+```
+
+
+```{r Exceedance- approaching and exceedance data, results="asis"}
+
+  
+  Exceedance <- WQdata1 %>% filter(GL.Exceed == "Exceed") %>%
+    group_by(Month,Site, variable, guideline) %>%
+    summarise(N = n()) %>% unite(Exceedance, variable, guideline, sep = " exceeded ", remove = FALSE) %>%
+    select(-Exceedance, -guideline, -N) %>% unique(.)  
+
+  Approaching <- WQdata1 %>% filter(GL.80P.Exceed.only == "Approaching.Only") %>%
+    group_by(Month, Site, variable, guideline) %>%
+    summarise(N = n()) %>% select(-guideline, -N) %>% unique(.)
+
+
+```
+
+
+```{r total phosporous ccme, results="asis"}
+
+Total.Phosphorus.CCME<-WQGLs %>%
+    filter(variable == "Total.Phosphorus") %>%
+    filter(Year == s.Year) %>%
+  #  filter(Month == s.Month) %>%
+    filter(Site %in% exceedance_sites)  %>%
+    #filter(Site %in% c("JM1", "JM10", "JM11", "JM2",  "JM3",  "JM4",  "JM5",  "JM6",  "JM7"))  %>%
+    mutate(GL.value = as.numeric(as.character(GL.value)),
+           Trigger.range = ifelse(GL.value == 1, "ultra-oligotrophic",
+                                  ifelse(GL.value == 2, "oligotrophic",
+                                         ifelse(GL.value == 3, "mesotrophic",
+                                                ifelse(GL.value == 4, "meso-eutrophic",
+                                                       ifelse(GL.value == 5, "eutrophic",
+                                                              ifelse(GL.value == 6, "hyper-eutrophic", NA)))))))
+  
+  
+```
+
+```{r exporting GL screening results, results="asis"}
+
+
+  export_list <- list(
+    "Exceedance" = Exceedance,
+    "Approaching" = Approaching,
+    "Total.Phosphorus.CCME" = Total.Phosphorus.CCME)
+  
+  write_xlsx(export_list, path = here(GL_screening_path))
+  
+```
+
+
+```{r manipulating trigger level files, results="asis"}
+
+Trigger.level.1<- trigger_levels1 %>%
+  gather(-Station, key = variable, value = Trigger.level.1) %>%
+    mutate(Trigger.L.1.type = str_sub(Trigger.level.1, 1,1),
+      Trigger.level.1 = str_replace_all(Trigger.level.1, "B = ", ""),
+      Trigger.level.1 = str_replace_all(Trigger.level.1, "B= ", ""),
+      Trigger.level.1 = str_replace_all(Trigger.level.1, "A = ", ""),
+      variable = str_replace_all(variable, "Dissolved Zinc", "Zn.Dissolved"),
+      variable = str_replace_all(variable, "Dissolved Copper", "Cu.Dissolved"),
+      variable = str_replace_all(variable, "Dissolved Iron", "Fe.Dissolved")
+      )
+   
+
+
+Trigger.level.2<- trigger_levels2 %>%
+  gather(-Station, key = variable, value = Trigger.level.2) %>%
+  mutate(Trigger.L.2.type = str_sub(Trigger.level.2, 1, 1),
+         Trigger.level.2 = str_replace_all(Trigger.level.2, "B = ", ""),
+         Trigger.level.2 = str_replace_all(Trigger.level.2, "B= ", ""),
+         Trigger.level.2 = str_replace_all(Trigger.level.2, "A = ", ""),
+         variable = str_replace_all(variable, "Dissolved Zinc", "Zn.Dissolved"),
+         variable = str_replace_all(variable, "Dissolved Copper", "Cu.Dissolved"),
+         variable = str_replace_all(variable, "Dissolved Iron", "Fe.Dissolved")
+  ) 
+
+
+```
+
+
+```{r joining trigger levels, results="asis"}
+
+
+trigger.levels <- full_join(Trigger.level.1, Trigger.level.2, by=c("Station", "variable")) %>% rename("Site" = "Station")
+
+
+```
+
+
+```{r historical data define params, results="asis"}
+
+params <- Trigger.level.2 %>% pull(variable) %>% unique() 
+  
+  
+  
+  pH_0.8_lower <- (-log10((10^-6.5)*0.8))
+  pH_0.8_upper <- 9-((-log10((10^-9)*0.8))-9)
+  pH_0.95_lower <- (-log10((10^-6.5)*0.95))
+  pH_0.95_upper <- 9-((-log10((10^-9)*0.95))-9)
+
+  
+  
+  Site.order <- c("JM5","JM6","JM11","JM1","JM2","JM3","JM4","JM7","JM10")
+  param.order <- c("pH","Sulphate","Cu.Dissolved","Fe.Dissolved","Zn.Dissolved","Hardness.Total.CaCO3")
+  P.order <- c("pH.upper","pH.lower","Sulphate","Cu.Dissolved","Fe.Dissolved","Zn.Dissolved","Hardness.Total.CaCO3")
+  
+
+```
+
+
+```{r manipulate WQ historical file, results="asis"}
+
+  
+  WQ.all <- WQ.raw  %>%
+    filter(Site %in% Site.order, 
+           Parameter %in% param.order) %>%
+    mutate(Date = as.Date(Date.Sampled,format="%m/%d/%Y"),as.character(Month))%>%
+    select(Site,Date,Year,Month,Parameter,ALS.Sample.ID,QAQC,Value)
+  
+  WQ.all.m <- WQ.all %>%
+    distinct() %>%
+    #Arrange parameter order
+    mutate(Parameter = factor(Parameter,levels=param.order)) %>%
+    arrange(Parameter) %>%
+    spread(Parameter,Value)
+
+
+
+```
+
+
+```{r get historical data for each parameter, results="asis"}
+
+hist_sites= c("JM4","JM6",  "JM7")
+
+Fe_Ph_sites = c("JM4","JM5")
+
+
+###Dissolved Zinc
+
+Zn.hist <- get_historical_data(WQ.all.m,"Zn.Dissolved",hist_sites)
+
+##Copper
+
+Cu.hist <- get_historical_data(WQ.all.m,"Cu.Dissolved",hist_sites)
+
+
+##Iron
+
+Fe.hist <- get_historical_data(WQ.all.m,"Fe.Dissolved", Fe_Ph_sites)
+
+
+##pH
+
+pH.hist <- get_historical_data(WQ.all.m,"pH", Fe_Ph_sites)
+
+```
+
+
+```{r computing trigger 1-based on historical, results="asis"}
+
+Zn.trigger1.B <- compute_trigger1(Zn.hist,0.8)
+
+Cu.trigger1.B <- compute_trigger1(Cu.hist,0.8)
+
+
+Fe.trigger1.B <- compute_trigger1(Fe.hist,0.8)
+
+
+pH.trigger1.B <- compute_trigger1(pH.hist,0.2)
+```
+
+
+```{r computing trigger 2-based on historical, results="asis"}
+
+Zn.trigger2.B <- compute_trigger2(Zn.hist,0.95)
+
+Cu.trigger2.B <- compute_trigger2(Cu.hist,0.95)
+
+
+Fe.trigger2.B <- compute_trigger2(Fe.hist,0.95)
+
+
+pH.trigger2.B <- compute_trigger2(pH.hist,0.05)
+```
+
+
+
+```{r manipulate guidance files 2, results="asis"}
+
+
+  WQdata2<-WQGLs %>%
+    filter(Year == s.Year) %>%
+    filter(Site %in% exceedance_sites)  %>%
+    #Ensure values are numeric
+    mutate(
+      #DL.value = as.numeric(as.character(DL.value)),
+           Raw.value = as.numeric(as.character(Raw.value)),
+           GL.value = as.numeric(as.character(GL.value)),
+           GL.80P = GL.value * 0.8,
+           GL.95P = GL.value * 0.95,
+           variable =str_replace_all(variable,"Zn.Total", "Zn.Dissolved")) %>%  # # use the total Zn BC guideline for dissolved Zn
+    filter(variable %in% params)  %>%
+  full_join(., trigger.levels) %>%
+    filter(!(variable == "Zn.Dissolved" & Trigger.L.1.type %in% c("A", "B") & guideline %in% c("BC.max", "BC.30d"))) %>% # Replace the BC guideline with CCME guideline for dissolved Zn 
+    filter(!(variable == "Zn.Dissolved" & Trigger.L.1.type %in% c("C") & guideline %in% c("CCME.long", "CCME.short"))) %>% # Replace the BC guideline with CCME guideline for dissolved Zn 
+    filter(!(variable == "pH" & guideline %in% c("CCME.65", "CCME.9"))) %>%
+    mutate( 
+           Trigger.level.1 = ifelse(variable != "pH" & Trigger.L.1.type == "C", GL.80P, Trigger.level.1),
+           Trigger.level.1 = ifelse(guideline == "BC.9" & Trigger.L.1.type == "C", pH_0.8_upper, Trigger.level.1),
+           Trigger.level.1 = ifelse(guideline == "BC.65" & Trigger.L.1.type == "C", pH_0.8_lower, Trigger.level.1),
+           Trigger.level.1 = as.numeric(Trigger.level.1),
+           Trigger.level.2 = ifelse(variable != "pH" & Trigger.L.2.type == "C", GL.95P, Trigger.level.2),
+           Trigger.level.2 = ifelse(guideline == "BC.9" & Trigger.L.2.type == "C", pH_0.95_upper, Trigger.level.2),
+           Trigger.level.2 = ifelse(guideline == "BC.65" & Trigger.L.2.type == "C", pH_0.95_lower, Trigger.level.2),
+           Trigger.level.2 = as.numeric(Trigger.level.2)) 
+    
+# Kelsey only wants to screening against the short term guideline so remove the long-terms
+  
+
+```
+
+
+```{r filter WQ Guide line by guideline, results="asis"}
+
+
+WQdata4 <- WQdata2 %>% 
+  filter(guideline != "CCME.long") %>% 
+  filter(! guideline == "BC.long")  %>% 
+  filter(! guideline == "BC.chronic")%>%
+  filter(!(guideline == "BC.30d" & variable == "Zn.Dissolved"))  
+
+
+
+WQdata4$variable[which(WQdata4$guideline == "BC.9")] <- "pH.upper"
+WQdata4$variable[which(WQdata4$guideline == "BC.65")] <- "pH.lower"
+
+
+# confirm all the parameters are unique except for pH
+WQdata3 <- WQdata4 %>% group_by(variable)  %>% summarise(N = n())
+
+
+
+```
+
+
+```{r trigger exceedance, results="asis"}
+
+
+trigger.exceedance <- WQdata4 %>%
+  mutate(Level.1.exceedance = ifelse(variable == "pH.lower" & Raw.value < Trigger.level.1, "Exceed","ok"),
+         Level.1.exceedance = ifelse(variable != "pH.lower" & Raw.value > Trigger.level.1, "Exceed","ok"),
+         Level.2.exceedance = ifelse(variable == "pH.lower" & Raw.value < Trigger.level.2, "Exceed","ok"),
+         Level.2.exceedance = ifelse(variable != "pH.lower" & Raw.value > Trigger.level.2, "Exceed","ok"),
+         Level.1.factor = ifelse(variable == "pH.lower" & Raw.value < Trigger.level.1, Trigger.level.1/Raw.value, NA),
+         Level.1.factor = ifelse(variable != "pH.lower" & Raw.value > Trigger.level.1, Raw.value/Trigger.level.1, NA),
+         Level.2.factor = ifelse(variable == "pH.lower" & Raw.value < Trigger.level.2, Trigger.level.2/Raw.value, NA),
+         Level.2.factor = ifelse(variable != "pH.lower" & Raw.value > Trigger.level.2, Raw.value/Trigger.level.2, NA))
+  
+
+
+trigger.exceedance <- WQdata4 %>%
+  mutate(Level.1.exceedance = ifelse(variable == "pH.lower" & Raw.value < Trigger.level.1, "Exceed",
+                                     ifelse(variable == "pH.upper" & Trigger.L.1.type %in% c("A", "B"), NA,
+                                            ifelse(variable != "pH.lower" & Raw.value > Trigger.level.1, "Exceed","ok"))),
+        
+         Level.2.exceedance = ifelse(variable == "pH.lower" & Raw.value < Trigger.level.2, "Exceed",
+                                     ifelse(variable == "pH.upper" & Trigger.L.2.type %in% c("A", "B"), NA,
+                                            ifelse(variable != "pH.lower" & Raw.value > Trigger.level.2, "Exceed","ok"))),
+         Level.1.factor = ifelse(variable == "pH.lower" & Raw.value < Trigger.level.1, Trigger.level.1/Raw.value,
+                                 ifelse(variable == "pH.upper" & Trigger.L.1.type %in% c("A", "B"), NA,
+                                        ifelse(variable != "pH.lower" & Raw.value > Trigger.level.1, Raw.value/Trigger.level.1, NA))),
+         Level.2.factor = ifelse(variable == "pH.lower" & Raw.value < Trigger.level.2, Trigger.level.2/Raw.value,
+                                 ifelse(variable == "pH.upper" & Trigger.L.2.type %in% c("A", "B"), NA,
+                                        ifelse(variable != "pH.lower" & Raw.value > Trigger.level.2, Raw.value/Trigger.level.2, NA))) )
+
+
+```
+
+
+
+```{r compute level 1 and level 2 exceedance, results="asis"}
+
+level.1 <-compute_trigger_exceedance(Level.1.factor)
+
+level.2 <-compute_trigger_exceedance(Level.2.factor)
+
+
+
+```
+
+
+```{r create trigger tables, results="asis"}
+
+
+
+Trig.1.Table <- trigger.exceedance%>%
+  select(Month,Site,variable,Raw.value, Trigger.level.1, Trigger.L.1.type,Level.1.exceedance)%>%
+  arrange(Month,match(Site,Site.order),match(variable, P.order))%>%
+  rename(Variable=variable,Concentration=Raw.value,"Trigger Level"=Trigger.level.1,"Trigger Type"=Trigger.L.1.type)%>%
+  mutate(Variable= ifelse(Variable=="Cu.Dissolved","Dissolved Copper",ifelse(Variable=="Fe.Dissolved","Dissolved Iron",
+                    ifelse(Variable=="Zn.Dissolved","Dissolved Zinc",Variable))))
+
+Trig.2.Table <- trigger.exceedance%>%
+  select(Month,Site,variable,Raw.value, Trigger.level.2, Trigger.L.2.type,Level.2.exceedance)%>%
+  arrange(Month,match(Site,Site.order),match(variable, P.order))%>%
+  rename(Variable=variable,Concentration=Raw.value,"Trigger Level"=Trigger.level.2,"Trigger Type"=Trigger.L.2.type)%>%
+  mutate(Variable= ifelse(Variable=="Cu.Dissolved","Dissolved Copper",ifelse(Variable=="Fe.Dissolved","Dissolved Iron",
+                                                                             ifelse(Variable=="Zn.Dissolved","Dissolved Zinc",Variable))))
+  
+
+```
+
+
+```{r create summary for the current year, results="asis"}
+
+
+Summary <- WQ.current%>%
+  rename(Value=Results)%>%
+  mutate(Raw.DLAdjusted = halfDL(Value),Site = as.character(Site))%>%
+  select(c(Site,Date,Month,Year,Parameter,Value,Raw.DLAdjusted))%>%
+  mutate(Raw.DLAdjusted = as.numeric(Raw.DLAdjusted))%>%
+  group_by(Site,Date,Month,Year,Parameter)%>%
+  summarise (Raw.DLAdjusted = mean(Raw.DLAdjusted, na.rm=T))%>%
+  filter(Site %in% Site.order, Parameter %in% param.order)
+
+  
+
+Summary.Table <- as.data.frame(Summary)%>% 
+  select(Month,Site,Parameter,Raw.DLAdjusted) %>%
+  mutate(Site=factor(Site,levels=Site.order),Parameter=(factor(Parameter,levels=param.order)))%>%
+  arrange(Month,Site,Parameter)%>%
+  spread(Parameter,Raw.DLAdjusted)
+ 
+
+trigger.list <- list(
+  "screening.process" = trigger.exceedance,
+  "level.1.trigger" = level.1,
+  "level.2.trigger" =level.2,
+  "level.1.table"=Trig.1.Table,
+  "level.2.table"=Trig.2.Table,
+  "WQ.Summary"=Summary.Table)
+
+write_xlsx(trigger.list, here(trigger_exceed_path))   
+
+
+
+ 
+```
+
+
+
+```{r join triggers, results="asis"}
+
+
+joined_triggers <- full_join(Trig.1.Table,Trig.2.Table,by=c("Month","Site","Variable", "Concentration"),suffix = c(".1", ".2")) %>% 
+  select(Month,Site, Variable, Concentration, `Trigger Type.1`, `Trigger Level.1`, `Trigger Level.2`) %>% 
+  filter(!is.na(`Trigger Level.1`) & !is.na(`Trigger Level.2`))  
+  
+
+
+
+```
+
+
+# Summary Tables {.tabset}
+
+## Water Quality Results for TARP Parameters
+
+```{r produce summary tables in docs, results='asis'}
+
+
+# datatable is a function in the DT library
+Summary.Table %>% datatable(caption = paste0("Table 3.1-1. ", s.Year ," Water Quality Results for TARP Parameters."),
+  extensions = 'Buttons',
+            options = list(dom = 'Blfrtip',
+                           buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                           lengthMenu = list(c(10,25,50,-1),
+                                             c(10,25,50,"All"))))
+
+
+#knitr::kable(Summary.Table,caption=paste0("Table 3.1-1. ", s.Year ," Water Quality Results for TARP Parameters."),
+ #     digits=3,row.names=FALSE)
+
+
+```
+
+## Comparison of Water Quality levels
+
+```{r produce comparisons with triggers, results= 'asis'}
+
+joined_triggers2 <- joined_triggers %>% 
+  mutate(trig1_ex = ifelse(Concentration > `Trigger Level.1`, 1,0),
+         trig2_ex = ifelse(Concentration > `Trigger Level.2`, 1,0))
+
+
+trigger_DT <- joined_triggers2 %>% 
+  datatable(caption = paste0("Table 3.2-1. Comparison of ", s.Year , " Water Quality Results to Level 1 and 2 Trigger Thresholds"),
+  extensions = 'Buttons',
+            options = list(columnDefs = list(list(targets = c(8,9), visible = FALSE)),
+  dom = 'Blfrtip',
+                           buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                           lengthMenu = list(c(10,25,50,-1),
+                                             c(10,25,50,"All")))) %>% 
+                               
+formatRound(columns=c('Trigger Level.1', 'Trigger Level.2'), digits=3) %>% 
+
+formatStyle(
+  'Concentration', 'trig1_ex',
+  backgroundColor = styleEqual(c(1,0), c('red', NA))) %>% 
+  
+  formatStyle(
+  'Trigger Level.1','trig1_ex',
+  backgroundColor = styleEqual(c(1,0), c('red', NA))) %>% 
+  
+  formatStyle(
+  'Concentration', 'trig2_ex',
+  backgroundColor = styleEqual(c(1,0), c('red', NA))) %>% 
+  
+  formatStyle(
+  'Trigger Level.2','trig2_ex',
+  backgroundColor = styleEqual(c(1,0), c('red', NA))) 
+
+ 
+
+
+
+#knitr::kable(joined_triggers,caption=paste0("Table 3.2-1. Comparison of ", s.Year , " Water Quality Results to Level 1 and 2 Trigger Thresholds"),
+ #     digits=3,row.names=FALSE)
+
+# 
+# data %>% 
+#     mutate_all(~cell_spec(
+#         X1, 
+#         color = ifelse(X1 < 0, "white", "black"),
+#         background = ifelse(X1 < 0, "black","white"))) %>%
+#     kable(escape = F) %>%
+#     kable_styling()
+
+```
+
+```{r graphing variables, results="asis"}
+
+graph.theme <-theme_bw()+                                                        #####Make theme black and white.
+  #theme(panel.grid.minor=element_blank())+                           #####Remove default grid lines.
+  #theme(panel.grid.major=element_blank())+                           #####Remove default grid lines.
+  theme(axis.text.x=element_text(vjust=1,hjust=0.5,size=9))+  #####x-axis label appearance.
+  theme(plot.margin=unit(c(1.5,5.2,2,0.25), "cm"))+                    #####Plot margins.
+  theme(legend.title=element_blank(),legend.position=c("bottom"))+   #####Move legend around.
+  theme(legend.text=element_text(size=8))+                           #####Size of legend text.
+  theme(legend.key.size=unit(0.5,"cm"))                             #####Size of legend boxes
+
+
+
+
+legend.info <- data.frame("month.pts" = c(15,16,17,18,7),
+                          "month.colour" = brewer.pal(n = 5, name = 'Dark2'),
+                          "Month"=c("June", "July", "August","September","October"))
+```
+
+
+
+```{r manipulating WQ file for plots, results="asis"}
+
+WQ.all.plots <- WQ.raw  %>%
+  filter(Site %in% Site.order, 
+         Parameter %in% param.order) %>%
+  mutate(Date = as.Date(Date.Sampled,format="%m/%d/%Y"),as.character(Month))%>%
+  select(Site,Date,Year,Month,Parameter,Value)%>%
+  mutate(Raw.DLAdjusted = as.numeric(halfDL(Value)),DL.Flag= ifelse(grepl("<",Value)==TRUE,1,0))%>%
+  group_by(Site,Date,Month,Parameter)%>%
+  mutate (Raw.DLAdjust = mean(Raw.DLAdjusted, na.rm=T))%>%
+  select(Site,Date,Parameter,Year,Month,Raw.DLAdjust)
+
+
+##Assign group num
+
+WQ.all.plots <- WQ.all.plots %>% Assign_group.num()
+ 
+
+
+```
+
+```{r changing parameter names in Trigger tables, results= "asis"}
+
+
+Trig.1.Table <- Trig.1.Table %>% 
+  mutate(Variable = case_when( Variable %in% c("pH.upper","pH.lower") ~ "pH",
+                           Variable == "Dissolved Copper" ~ "Cu.Dissolved",
+                           Variable == "Dissolved Iron" ~ "Fe.Dissolved",
+                           Variable == "Dissolved Zinc" ~ "Zn.Dissolved",
+                           TRUE ~ Variable)) %>% 
+  Assign_group.num()
+
+                           
+  
+Trig.2.Table <- Trig.2.Table %>% 
+  mutate(Variable = case_when( Variable %in% c("pH.upper","pH.lower") ~ "pH",
+                           Variable == "Dissolved Copper" ~ "Cu.Dissolved",
+                           Variable == "Dissolved Iron" ~ "Fe.Dissolved",
+                           Variable == "Dissolved Zinc" ~ "Zn.Dissolved",
+                           TRUE ~ Variable))%>% 
+  Assign_group.num()
+                           
+
+
+```
+
+
+
+
+```{r creating site,variable dataset to generate plots, results="asis"}
+
+groups <- c("Group1", "Group2","Group3")
+groups <- factor(groups, levels = unique(groups))
+
+plot.obj <- list()
+
+grid_plots <- expand.grid(Parameter = param.order, Group = groups)
+
+
+##upstream ref sites
+
+grid_plots <- grid_plots %>% 
+  mutate(Site = case_when(Group == "Group1" ~ list(c("JM5", "JM6")),
+                          Group == "Group2" ~ list("JM7"),
+                          Group == "Group3" ~ list(c("JM1","JM2","JM3","JM4")),
+                          TRUE ~ list("NA"))) %>% 
+  mutate(Ref_site = case_when(Group == "Group1" ~ "JM11",
+                              Group %in% c("Group2","Group3") ~ "JM10",
+                              TRUE ~ "NA"),
+         fig.no = 1:nrow(.),
+         trigger1 = NA,
+         trigger2= NA,
+         ymin = ifelse(Parameter == 'pH', 6, 0),
+         add_max= case_when(
+           Parameter == "Sulphate" ~ 5,
+           Parameter == "Cu.Dissolved" ~ 0.001,
+           Parameter == "Zn.Dissolved" ~ 0.5,
+           Parameter == "pH" ~ 1,
+           TRUE ~ 0),
+         is.ref = ifelse(is.na(Ref_site),FALSE,TRUE),
+         is.trigger = ifelse(Group %in% c("Group1","Group2"), TRUE, FALSE)
+    
+         
+         )
+
+```
+
+```{r updating grid_plots table, fig.width=8, fig.height=6.5 }
+
+
+Text1 <- "Values below the detection limit were plotted as half the detection limit." 
+
+
+#for(each in 1:nrow(grid_plots)){
+for(each in 1:nrow(grid_plots)){
+  
+print(each)
+  
+  
+trigger1 <- compute_triggers_table(Trig.1.Table,Trig.2.Table,   grid_plots$Site[[each]], grid_plots$Parameter[each])[[1]]  
+
+
+trigger2 <- compute_triggers_table(Trig.1.Table,Trig.2.Table,   grid_plots$Site[[each]], grid_plots$Parameter[each])[[2]]  
+  
+Up.ref <- compute_reference_sites(grid_plots$Ref_site[each], grid_plots$Parameter[each]) 
+
+
+plotdat <- create_plot_data_table(WQ.all.plots,grid_plots$Group[each],grid_plots$Parameter[each])
+
+
+ymax <- max(c(Up.ref$Raw.DLAdjust,plotdat$Raw.DLAdjust))+ grid_plots$add_max[each]
+ylab <- paste0(grid_plots$Parameter[each]," (mg/L)")  
+to_date <- max(plotdat$Date)
+
+WQ.Plot <-WQ.Plot.refline (plotdat,grid_plots$Group[each],trigger1, trigger2,Up.ref, ylabel = ylab, ymin=grid_plots$ymin[each], ymax=ymax,
+                           ref.label = paste0(grid_plots$Ref_site[each], " (reference)"), to_date, grid_plots$is.ref[each], grid_plots$is.trigger[each])
+       
+plot.obj[[each]] <- WQ.Plot
+
+#WQ.Plot               
+#pdf(here(file.path(fig_dir,paste0("Figure A-", grid_plots$fig.no[each],".pdf"))),height=6.5,width=8)
+
+ #Text2 <- paste0("Figure A-", grid_plots$fig.no[each] ,". Station ", grid_plots$Site[each], " ", grid_plots$Parameter[each], " and Trigger Levels, 2009 to ", s.Year)
+#
+ #WQ.Plot.fixed<-set_panel_size(WQ.Plot,width=unit(5,"inches"),height=unit(3,"inches"))
+# grid.draw(WQ.Plot.fixed)
+ #grid.text(Text1,x=unit(.1,"npc"),y=unit(.15,"npc"),just=c("left","top"),gp=gpar(font=3,fontsize=8,col="black"))
+ #grid.text(Text2,x=unit(.1,"npc"),y=unit(.05,"npc"),just=c("left","bottom"),gp=gpar(font=1,fontsize=12,col="black"))
+
+#dev.off()
+
+
+
+}
+  
+```
+
+
+
+
+# Parameter Concentrations and trigger levels {.tabset}
+## pH
+
+```{r ph-generate each tab and plots 1, fig.width= 8, fig.height=6.5}
+
+ggplotly(plot.obj[[1]]) %>%  layout(legend = list(orientation = "h", x = 0.1, y = -0.2))
+ggplotly(plot.obj[[6]]) 
+
+ggplotly(plot.obj[[11]]) 
+
+  #ph.plot1 <- grid.arrange(ggplotly(plot.obj[[1]]),ggplotly(plot.obj[[2]]),ggplotly(plot.obj[[3]]),ggplotly(plot.obj[[4]]), ncol=2, nrow=2)
+#ph.plot1 <- subplot(ggplotly(plot.obj[[1]]),ggplotly(plot.obj[[2]]),ggplotly(plot.obj[[3]]),ggplotly(plot.obj[[4]]),nrows = 2)  
+#ph.plot1
+ 
+
+```
+
+## Sulphate
+
+```{r Sulphate generate each tab and plots, fig.width= 12, fig.height=10}
+
+knit_exit()
+  # so2.plot1 <- subplot(ggplotly(plot.obj[[10]]),ggplotly(plot.obj[[11]]),ggplotly(plot.obj[[12]]),ggplotly(plot.obj[[13]]),ggplotly(plot.obj[[14]]),ggplotly(plot.obj[[15]]),ggplotly(plot.obj[[16]]),ggplotly(plot.obj[[17]]),ggplotly(plot.obj[[18]]),nrows = 3)  
+  # so2.plot1
+  # 
+
+
+```
+
+
